@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Team 8 PCB's Air Monitor</title>
+    <link rel="stylesheet" href="styles.css?v=team8" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+    <script src="app.js?v=team8" defer></script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Team 8 PCB's Air Monitor</h1>
+        <p class="sub">ESP32 · USB serial · 115200 baud · CSV from <code>bmv.ino</code></p>
+      </div>
+      <div class="toolbar">
+        <span id="status" class="status">Disconnected</span>
+        <button type="button" id="btn-connect" class="primary">Connect USB</button>
+        <button type="button" id="btn-disconnect" disabled>Disconnect</button>
+      </div>
+    </header>
+    <main>
+      <div class="dashboard" id="dashboard">
+        <div class="dashboard-row dashboard-row--top" id="grid-top"></div>
+        <div class="dashboard-row dashboard-row--bottom" id="grid-bottom">
+        <article
+          id="humidity-panel"
+          class="humidity-panel card card--bottom"
+          role="button"
+          tabindex="0"
+          data-csv-index="2"
+          title="Click for humidity history graph"
+        >
+          <h3 class="humidity-panel-title">Humidity</h3>
+          <div class="humidity-panel-body humidity-panel-body--water">
+            <div class="humid-water-widget">
+              <svg
+                class="humid-water-svg"
+                viewBox="0 0 200 200"
+                width="200"
+                height="200"
+                aria-hidden="true"
+              >
+                <defs>
+                  <clipPath id="humidCircleClip">
+                    <circle cx="100" cy="100" r="88" />
+                  </clipPath>
+                </defs>
+                <circle
+                  cx="100"
+                  cy="100"
+                  r="90"
+                  fill="none"
+                  stroke="var(--border)"
+                  stroke-width="2"
+                />
+                <g clip-path="url(#humidCircleClip)">
+                  <rect width="200" height="200" fill="#0f1318" />
+                  <rect
+                    id="humid-liquid-fill"
+                    x="0"
+                    y="200"
+                    width="200"
+                    height="0"
+                    fill="#2a3340"
+                  />
+                  <g id="humid-wave-layer" class="humid-wave-layer" transform="translate(0,200)">
+                    <g class="humid-wave-scroll">
+                      <path
+                        id="humid-wave-path-a"
+                        d="M-400,0 Q-350,-10 -300,0 T-200,0 T-100,0 T0,0 T100,0 T200,0 T300,0 T400,0 T500,0 V30 H-400 Z"
+                        fill="#2a3340"
+                      />
+                    </g>
+                    <g class="humid-wave-scroll humid-wave-scroll--b">
+                      <path
+                        id="humid-wave-path-b"
+                        d="M-400,4 Q-350,-4 -300,4 T-200,4 T-100,4 T0,4 T100,4 T200,4 T300,4 T400,4 T500,4 V34 H-400 Z"
+                        fill="#2a3340"
+                        opacity="0.45"
+                      />
+                    </g>
+                  </g>
+                </g>
+              </svg>
+              <div class="humid-water-overlay">
+                <span id="humid-panel-value" class="humid-water-num">—</span
+                ><span class="humid-water-pct">%</span>
+              </div>
+            </div>
+          </div>
+          <div class="card-legend card-legend--humid" aria-hidden="true">
+            <span class="card-legend-item"
+              ><i class="lg-dot" style="background: #f59e0b"></i> Low &lt;30%</span
+            >
+            <span class="card-legend-item"
+              ><i class="lg-dot lg-good"></i> Ideal 30–60%</span
+            >
+            <span class="card-legend-item"
+              ><i class="lg-dot" style="background: #f87171"></i> High &gt;60%</span
+            >
+          </div>
+          <p id="humid-panel-status" class="air-status" aria-live="polite"></p>
+          <div class="card-footer">
+            <span>Graph</span> Click for history
+          </div>
+        </article>
+        </div>
+      </div>
+    </main>
+
+    <div id="modal" class="modal-overlay" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <div>
+            <h2 id="modal-title">Metric</h2>
+            <p id="modal-current" class="current">—</p>
+          </div>
+          <button type="button" class="close-btn" id="modal-close">Close</button>
+        </div>
+        <div class="chart-box">
+          <canvas id="chart-canvas"></canvas>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
