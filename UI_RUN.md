@@ -2,6 +2,16 @@
 
 The dashboard is static HTML/JS. You open it in a browser **over HTTP** (not `file://`), then connect **USB** or **WebSocket** for live data.
 
+### Docker (UI + optional bridge)
+
+From the **project root**:
+
+```bash
+docker compose up --build
+```
+
+Then open **http://localhost:8765**. Optional USB→WebSocket bridge: set **`SERIAL_PORT`** (Linux + device mapping). Details: **[DOCKER.md](DOCKER.md)**.
+
 ---
 
 ## 1. Start the web server

@@ -1,0 +1,10 @@
+.git
+.pio
+.venv
+__pycache__
+*.pyc
+.vscode
+wifi_secrets.h
+battery_log.csv
+battery_test/.pio
+arduino_data_collect

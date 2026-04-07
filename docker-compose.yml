@@ -1,0 +1,25 @@
+# BMV dashboard + optional USB serial bridge.
+#
+# UI only (e.g. ESP32 on Wi‑Fi):
+#   docker compose up --build
+#   Open http://localhost:8765 — WebSocket URL ws://<esp-ip>:8766
+#
+# UI + bridge (Linux: pass through your USB serial device):
+#   SERIAL_PORT=/dev/ttyUSB0 docker compose up --build
+#   Uncomment `devices:` below and set the host path.
+
+services:
+  bmv:
+    build: .
+    ports:
+      - "8765:8765"
+      - "8766:8766"
+    environment:
+      # Host serial device path *inside the container* (must match devices: mapping)
+      - SERIAL_PORT=${SERIAL_PORT:-}
+      # Optional: append battery rows while bridging (path inside container)
+      - BATTERY_LOG=${BATTERY_LOG:-}
+    # Linux USB serial example (adjust device node):
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    # privileged: true
