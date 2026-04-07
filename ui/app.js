@@ -1,6 +1,6 @@
 /**
  * ESP32 CSV: USB (Web Serial) or WebSocket — PM2.5, Temp, Humidity, Gas, Pressure
- * (Firmware sends PM1, PM2.5, PM10, … — UI skips PM1 & PM10.)
+ * (Firmware may send 8 columns incl. BatteryPct; UI ignores extra fields.)
  * Web Serial: Chrome / Edge. WebSocket: any modern browser to your ESP / bridge.
  */
 (function () {
@@ -22,7 +22,7 @@
   const TEMP_THERMO_MIN = -10;
   const TEMP_THERMO_MAX = 40;
 
-  /** csvIndex = column in firmware CSV (0-based): PM1,PM2.5,PM10,Temp,Hum,Gas,Press */
+  /** csvIndex = column in firmware CSV (0-based): PM1,PM2.5,PM10,Temp,Hum,Gas,Press[,Batt] */
   const METRICS = [
     { id: "pm25", label: "PM2.5", unit: "µg/m³", gaugeMax: 150, csvIndex: 1 },
     { id: "temp", label: "Temp", unit: "°C", gaugeMax: 45, csvIndex: 3 },
@@ -682,8 +682,10 @@
     if (parts.length < 7) return null;
     // Ignore CSV header: column 2 is the label "PM2.5" (parseFloat would read "2").
     if (/pm/i.test(parts[1])) return null;
-    const lower = parts.map((p) => p.toLowerCase());
-    const nums = parts.slice(0, 7).map((p, j) => {
+    const padded = parts.slice();
+    while (padded.length < 8) padded.push("nan");
+    const lower = padded.map((p) => p.toLowerCase());
+    const nums = padded.slice(0, 8).map((p, j) => {
       if (lower[j] === "nan" || lower[j] === "inf" || lower[j] === "-inf")
         return NaN;
       const x = parseFloat(p);
@@ -962,7 +964,7 @@
               return (
                 (ctx.dataset.label || m.label) +
                 ": " +
-                Number(y).toFixed(DISPLAY_DP)
+                formatVal(m, y)
               );
             },
           },

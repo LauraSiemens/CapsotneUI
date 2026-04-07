@@ -9,18 +9,28 @@ Usage:
 Then open the UI, choose WebSocket, URL ws://localhost:8766 (or this machine's LAN IP).
 
 Close other serial monitors (including Web Serial in the browser) before starting.
+
+Optional: --battery-log battery_log.csv  (same folder or path) to append BatteryPct while bridging.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
-from typing import Any, Set
+from typing import Any, Optional, Set
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
 
 import serial
 import websockets
 from websockets.exceptions import ConnectionClosed
+
+from battery_log_util import append_battery_row
+from bmv_csv import extract_battery_percent
 
 clients: Set[Any] = set()
 
@@ -49,7 +59,7 @@ async def ws_handler(websocket: Any) -> None:
         clients.discard(websocket)
 
 
-async def serial_reader(port: str, baud: int) -> None:
+async def serial_reader(port: str, baud: int, battery_log: Optional[str]) -> None:
     loop = asyncio.get_event_loop()
     try:
         ser = serial.Serial(port, baud, timeout=0.1)
@@ -69,17 +79,29 @@ async def serial_reader(port: str, baud: int) -> None:
             except Exception:
                 continue
             if text:
+                if battery_log:
+                    pct = extract_battery_percent(text)
+                    if pct is not None:
+                        await loop.run_in_executor(
+                            None, append_battery_row, battery_log, pct
+                        )
                 await broadcast(text)
     finally:
         ser.close()
 
 
 async def run_server(
-    serial_port: str, baud: int, ws_host: str, ws_port: int
+    serial_port: str,
+    baud: int,
+    ws_host: str,
+    ws_port: int,
+    battery_log: Optional[str],
 ) -> None:
     async with websockets.serve(ws_handler, ws_host, ws_port):
         print(f"WebSocket ws://{ws_host}:{ws_port}  (share LAN IP with phones on same Wi-Fi)")
-        await serial_reader(serial_port, baud)
+        if battery_log:
+            print(f"Battery log: {os.path.abspath(battery_log)}")
+        await serial_reader(serial_port, baud, battery_log)
 
 
 def main() -> None:
@@ -93,10 +115,24 @@ def main() -> None:
     p.add_argument("--baud", "-b", type=int, default=115200)
     p.add_argument("--ws-host", default="0.0.0.0", help="Listen address (default all interfaces)")
     p.add_argument("--ws-port", type=int, default=8766)
+    p.add_argument(
+        "--battery-log",
+        metavar="FILE",
+        default=None,
+        help="Append timestamp,battery_pct rows from 8-column CSV (e.g. battery_log.csv)",
+    )
     args = p.parse_args()
 
     try:
-        asyncio.run(run_server(args.port, args.baud, args.ws_host, args.ws_port))
+        asyncio.run(
+            run_server(
+                args.port,
+                args.baud,
+                args.ws_host,
+                args.ws_port,
+                args.battery_log,
+            )
+        )
     except KeyboardInterrupt:
         print("\nStopped.")
 

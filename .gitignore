@@ -1,5 +1,7 @@
 .pio
 .venv
+wifi_secrets.h
+battery_log.csv
 __pycache__/
 *.pyc
 .vscode/.browse.c_cpp.db*

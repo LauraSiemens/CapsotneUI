@@ -1,0 +1,2 @@
+# Free internal RAM for WiFi + WebSocket (Classic BT disabled)
+CONFIG_BT_ENABLED=n
