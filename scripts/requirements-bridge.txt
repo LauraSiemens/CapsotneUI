@@ -1,0 +1,3 @@
+# Serial → WebSocket bridge: pip install -r scripts/requirements-bridge.txt
+pyserial>=3.5
+websockets>=12.0

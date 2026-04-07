@@ -1,12 +1,18 @@
 /**
- * ESP32 CSV over USB: PM2.5, Temp, Humidity, GasAdjPct, Pressure
- * (Firmware still sends PM1, PM2.5, PM10, … — we skip PM1 & PM10 in the UI.)
- * Chrome / Edge — Web Serial API.
+ * ESP32 CSV: USB (Web Serial) or WebSocket — PM2.5, Temp, Humidity, Gas, Pressure
+ * (Firmware sends PM1, PM2.5, PM10, … — UI skips PM1 & PM10.)
+ * Web Serial: Chrome / Edge. WebSocket: any modern browser to your ESP / bridge.
  */
 (function () {
   "use strict";
 
   const BAUD = 115200;
+  /** Firmware sends ~1 Hz; mark stale if no parsed row for this long */
+  const DATA_STALE_MS = 6500;
+  /** Connected but no valid CSV row yet */
+  const DATA_WAIT_MS = 5000;
+  const WS_BACKOFF_START_MS = 1000;
+  const WS_BACKOFF_MAX_MS = 30000;
   const HISTORY_MAX = 400;
   const CHART_WINDOW = 80;
   const DISPLAY_DP = 2;
@@ -26,17 +32,35 @@
   ];
 
   const CSV_HUMIDITY = METRICS.findIndex((m) => m.id === "humidity");
+  const CSV_PRESSURE = METRICS.findIndex((m) => m.id === "pressure");
+  /** Map hPa to bubble fill height (0–100%) */
+  const PRESS_BUBBLE_MIN_HPA = 980;
+  const PRESS_BUBBLE_MAX_HPA = 1050;
 
   let port = null;
   let reader = null;
+  let ws = null;
   let readLoopAbort = false;
   let lineBuffer = "";
   let t0 = null;
+  /** Monotonic: last time a CSV data row was parsed and applied */
+  let lastTelemetryAt = null;
+  let sessionStartedAt = null;
+  let staleMonitorId = null;
+  let wsReconnectTimer = null;
+  let wsReconnectAttempt = 0;
+  /** Incremented so old WebSocket onclose handlers do not run reconnect logic */
+  let wsGen = 0;
+  /** User clicked Disconnect — do not auto-reconnect WebSocket */
+  let intentionalDisconnect = false;
   const history = METRICS.map(() => []);
 
   const els = {
     connect: document.getElementById("btn-connect"),
     disconnect: document.getElementById("btn-disconnect"),
+    connUsb: document.getElementById("conn-usb"),
+    connWifi: document.getElementById("conn-wifi"),
+    wsUrl: document.getElementById("ws-url"),
     status: document.getElementById("status"),
     gridTop: document.getElementById("grid-top"),
     gridBottom: document.getElementById("grid-bottom"),
@@ -53,6 +77,103 @@
   let chart = null;
   let selectedMetricIndex = 0;
 
+  function isWifiMode() {
+    return els.connWifi && els.connWifi.checked;
+  }
+
+  function setConnectionStatus(text, mode) {
+    els.status.textContent = text;
+    els.status.classList.remove("live", "warn");
+    if (mode === "live") els.status.classList.add("live");
+    else if (mode === "warn") els.status.classList.add("warn");
+  }
+
+  function lockConnModeUi(locked) {
+    if (els.connUsb) els.connUsb.disabled = locked;
+    if (els.connWifi) els.connWifi.disabled = locked;
+    if (els.wsUrl) els.wsUrl.disabled = locked || !isWifiMode();
+  }
+
+  function syncConnModeUi() {
+    const wifi = isWifiMode();
+    document.body.classList.toggle("conn-wifi-selected", wifi);
+    if (els.wsUrl) els.wsUrl.disabled = !wifi;
+  }
+
+  function beginDataSession() {
+    sessionStartedAt = performance.now();
+    lastTelemetryAt = null;
+    startStaleMonitor();
+  }
+
+  function endDataSession() {
+    stopStaleMonitor();
+    sessionStartedAt = null;
+    lastTelemetryAt = null;
+  }
+
+  function stopStaleMonitor() {
+    if (staleMonitorId !== null) {
+      clearInterval(staleMonitorId);
+      staleMonitorId = null;
+    }
+  }
+
+  function startStaleMonitor() {
+    stopStaleMonitor();
+    staleMonitorId = setInterval(staleTick, 1000);
+  }
+
+  function hasActiveUsbStream() {
+    return !!(port && port.readable && !readLoopAbort);
+  }
+
+  function hasOpenWebSocket() {
+    return ws && ws.readyState === WebSocket.OPEN;
+  }
+
+  function staleTick() {
+    if (intentionalDisconnect) return;
+    if (!hasActiveUsbStream() && !hasOpenWebSocket()) return;
+    const now = performance.now();
+    if (sessionStartedAt === null) return;
+
+    if (lastTelemetryAt === null) {
+      if (now - sessionStartedAt >= DATA_WAIT_MS) {
+        setConnectionStatus(
+          "No data yet — wrong port/URL, baud, or all sensor values nan",
+          "warn"
+        );
+      }
+      return;
+    }
+
+    if (now - lastTelemetryAt >= DATA_STALE_MS) {
+      setConnectionStatus(
+        "No data (stale) — reset ESP32, fix Wi‑Fi, or Disconnect then Connect",
+        "warn"
+      );
+      return;
+    }
+
+    setConnectionStatus(isWifiMode() ? "Live (WebSocket)" : "Live (USB)", "live");
+  }
+
+  function clearWsReconnectTimer() {
+    if (wsReconnectTimer !== null) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
+  }
+
+  function normalizeWsUrl(raw) {
+    let url = (raw || "").trim() || "ws://192.168.4.1:81";
+    if (!/^wss?:\/\//i.test(url)) {
+      url = "ws://" + url.replace(/^\/\//, "");
+    }
+    return url;
+  }
+
   /** User PM2.5 bands (µg/m³) */
   function getPm25Status(pm) {
     if (!Number.isFinite(pm)) return { color: "var(--muted)", symbol: "—" };
@@ -64,11 +185,11 @@
     return { color: "#4ade80", symbol: "Good" };
   }
 
-  /** Relative humidity: ideal ~30–60%; too low &lt;30%; too high &gt;60% */
+  /** Relative humidity: ideal 40–60%; low &lt;40%; high &gt;60% */
   function getHumidityStatus(h) {
     if (!Number.isFinite(h)) return { color: "var(--muted)", symbol: "—" };
     if (h > 60) return { color: "#f87171", symbol: "High" };
-    if (h >= 30) return { color: "#4ade80", symbol: "Ideal" };
+    if (h >= 40) return { color: "#4ade80", symbol: "Ideal" };
     return { color: "#60a5fa", symbol: "Low" };
   }
 
@@ -120,8 +241,8 @@
     }
     if (m.id === "humidity") {
       return `<div class="card-legend card-legend--humid" aria-hidden="true">
-        <span class="card-legend-item"><i class="lg-dot" style="background:#f59e0b"></i> Low &lt;30%</span>
-        <span class="card-legend-item"><i class="lg-dot lg-good"></i> Ideal 30–60%</span>
+        <span class="card-legend-item"><i class="lg-dot" style="background:#f59e0b"></i> Low &lt;40%</span>
+        <span class="card-legend-item"><i class="lg-dot lg-good"></i> Ideal 40–60%</span>
         <span class="card-legend-item"><i class="lg-dot" style="background:#f87171"></i> High &gt;60%</span>
       </div>`;
     }
@@ -186,11 +307,11 @@
     if (els.gridTop) els.gridTop.innerHTML = "";
     if (els.gridBottom) {
       els.gridBottom.querySelectorAll("article.card[data-csv-index]").forEach((el) => {
-        if (el.id !== "humidity-panel") el.remove();
+        if (el.id !== "humidity-panel" && el.id !== "pressure-panel") el.remove();
       });
     }
     METRICS.forEach((m, i) => {
-      if (m.id === "humidity") return;
+      if (m.id === "humidity" || m.id === "pressure") return;
       const card = document.createElement("article");
       card.className = "card";
       card.setAttribute("role", "button");
@@ -254,6 +375,83 @@
         if (els.gridBottom) els.gridBottom.appendChild(card);
       }
     });
+    if (els.gridBottom && !document.getElementById("pressure-panel")) {
+      els.gridBottom.appendChild(buildPressurePanelArticle());
+    }
+  }
+
+  function buildPressurePanelArticle() {
+    const art = document.createElement("article");
+    art.id = "pressure-panel";
+    art.className = "pressure-panel card card--bottom";
+    art.setAttribute("role", "button");
+    art.setAttribute("tabindex", "0");
+    art.dataset.csvIndex = String(CSV_PRESSURE);
+    art.title = "Click for pressure history graph";
+    art.innerHTML = `
+          <h3 class="pressure-panel-title">Pressure</h3>
+          <div class="pressure-panel-body pressure-panel-body--water">
+            <div class="press-water-widget">
+              <svg
+                class="press-water-svg"
+                viewBox="0 0 200 200"
+                width="200"
+                height="200"
+                aria-hidden="true"
+              >
+                <defs>
+                  <clipPath id="pressCircleClip">
+                    <circle cx="100" cy="100" r="88" />
+                  </clipPath>
+                </defs>
+                <circle
+                  cx="100"
+                  cy="100"
+                  r="90"
+                  fill="none"
+                  stroke="var(--border)"
+                  stroke-width="2"
+                />
+                <g clip-path="url(#pressCircleClip)">
+                  <rect width="200" height="200" fill="#0f1318" />
+                  <rect
+                    id="press-liquid-fill"
+                    x="0"
+                    y="200"
+                    width="200"
+                    height="0"
+                    fill="#2a3340"
+                  />
+                  <g id="press-wave-layer" class="press-wave-layer" transform="translate(0,200)">
+                    <g class="press-wave-scroll">
+                      <path
+                        id="press-wave-path-a"
+                        d="M-400,0 Q-350,-10 -300,0 T-200,0 T-100,0 T0,0 T100,0 T200,0 T300,0 T400,0 T500,0 V30 H-400 Z"
+                        fill="#2a3340"
+                      />
+                    </g>
+                    <g class="press-wave-scroll press-wave-scroll--b">
+                      <path
+                        id="press-wave-path-b"
+                        d="M-400,4 Q-350,-4 -300,4 T-200,4 T-100,4 T0,4 T100,4 T200,4 T300,4 T400,4 T500,4 V34 H-400 Z"
+                        fill="#2a3340"
+                        opacity="0.45"
+                      />
+                    </g>
+                  </g>
+                </g>
+              </svg>
+              <div class="press-water-overlay">
+                <span id="press-panel-value" class="press-water-num">—</span
+                ><span class="press-water-unit">hPa</span>
+              </div>
+            </div>
+          </div>
+          <p id="press-panel-status" class="air-status" aria-live="polite"></p>
+          <div class="card-footer">
+            <span>Graph</span> Click for history
+          </div>`;
+    return art;
   }
 
   /** Liquid + wave colors for circular humidity tank (Low / Ideal / High). */
@@ -320,6 +518,85 @@
     }
   }
 
+  /** Sea-level–style bands for legend + bubble tint */
+  function getPressureStatus(hPa) {
+    if (!Number.isFinite(hPa)) return { color: "var(--muted)", symbol: "—" };
+    if (hPa < 1000) return { color: "#60a5fa", symbol: "Low" };
+    if (hPa <= 1025) return { color: "#4ade80", symbol: "Normal" };
+    return { color: "#fb923c", symbol: "High" };
+  }
+
+  function pressureLiquidFillColor(hPa) {
+    if (!Number.isFinite(hPa)) return "#2a3340";
+    const st = getPressureStatus(hPa);
+    if (st.symbol === "High") return "#c4883a";
+    if (st.symbol === "Normal") return "#3d9cf0";
+    return "#4a7ab8";
+  }
+
+  /** 0–100% fill from hPa for the circular tank */
+  function pressureToFillPercent(hPa) {
+    if (!Number.isFinite(hPa)) return 0;
+    const t =
+      (hPa - PRESS_BUBBLE_MIN_HPA) / (PRESS_BUBBLE_MAX_HPA - PRESS_BUBBLE_MIN_HPA);
+    return Math.min(100, Math.max(0, t * 100));
+  }
+
+  function updatePressurePanel(value) {
+    const m = METRICS[CSV_PRESSURE];
+    const valEl = document.getElementById("press-panel-value");
+    const statusEl = document.getElementById("press-panel-status");
+    if (valEl) valEl.textContent = formatVal(m, value);
+
+    const liquid = document.getElementById("press-liquid-fill");
+    const waveLayer = document.getElementById("press-wave-layer");
+    const waveA = document.getElementById("press-wave-path-a");
+    const waveB = document.getElementById("press-wave-path-b");
+
+    if (liquid && Number.isFinite(value)) {
+      const pct = pressureToFillPercent(value);
+      const h = (pct / 100) * 200;
+      const yTop = 200 - h;
+      const fill = pressureLiquidFillColor(value);
+      liquid.setAttribute("y", String(yTop));
+      liquid.setAttribute("height", String(h));
+      liquid.setAttribute("fill", fill);
+      if (waveA) waveA.setAttribute("fill", fill);
+      if (waveB) waveB.setAttribute("fill", fill);
+      if (waveLayer) {
+        waveLayer.setAttribute("transform", `translate(0, ${yTop})`);
+        waveLayer.style.opacity = h > 0.5 ? "1" : "0";
+      }
+    } else {
+      if (liquid) {
+        liquid.setAttribute("y", "200");
+        liquid.setAttribute("height", "0");
+        liquid.setAttribute("fill", "#2a3340");
+      }
+      if (waveA) waveA.setAttribute("fill", "#2a3340");
+      if (waveB) waveB.setAttribute("fill", "#2a3340");
+      if (waveLayer) {
+        waveLayer.setAttribute("transform", "translate(0,200)");
+        waveLayer.style.opacity = "0";
+      }
+    }
+
+    if (valEl && Number.isFinite(value)) {
+      const st = getPressureStatus(value);
+      valEl.style.color = "#f8fafc";
+      if (statusEl) {
+        statusEl.textContent = st.symbol;
+        statusEl.style.color = st.color;
+      }
+    } else {
+      if (valEl) valEl.style.color = "var(--muted)";
+      if (statusEl) {
+        statusEl.textContent = "—";
+        statusEl.style.color = "var(--muted)";
+      }
+    }
+  }
+
   function setAirStatus(id, text, color) {
     const el = document.getElementById("status-" + id);
     if (!el) return;
@@ -330,6 +607,10 @@
   function updateCard(i, value) {
     if (i === CSV_HUMIDITY) {
       updateHumidityPanel(value);
+      return;
+    }
+    if (i === CSV_PRESSURE) {
+      updatePressurePanel(value);
       return;
     }
     const m = METRICS[i];
@@ -399,6 +680,8 @@
   function parseLine(line) {
     const parts = line.split(",").map((s) => s.trim());
     if (parts.length < 7) return null;
+    // Ignore CSV header: column 2 is the label "PM2.5" (parseFloat would read "2").
+    if (/pm/i.test(parts[1])) return null;
     const lower = parts.map((p) => p.toLowerCase());
     const nums = parts.slice(0, 7).map((p, j) => {
       if (lower[j] === "nan" || lower[j] === "inf" || lower[j] === "-inf")
@@ -408,6 +691,19 @@
     });
     if (!nums.some((n) => Number.isFinite(n))) return null;
     return nums;
+  }
+
+  function ingestTelemetryLine(trimmed) {
+    const nums = parseLine(trimmed);
+    if (!nums) return;
+    lastTelemetryAt = performance.now();
+    if (t0 === null) t0 = performance.now() / 1000;
+    const tSec = performance.now() / 1000 - t0;
+    METRICS.forEach((m, metricIndex) => {
+      const v = nums[m.csvIndex];
+      updateCard(metricIndex, v);
+      pushHistory(metricIndex, tSec, v);
+    });
   }
 
   async function readLoop() {
@@ -425,40 +721,141 @@
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          const nums = parseLine(trimmed);
-          if (!nums) continue;
-          if (t0 === null) t0 = performance.now() / 1000;
-          const tSec = performance.now() / 1000 - t0;
-          METRICS.forEach((m, metricIndex) => {
-            const v = nums[m.csvIndex];
-            updateCard(metricIndex, v);
-            pushHistory(metricIndex, tSec, v);
-          });
+          ingestTelemetryLine(trimmed);
         }
       }
     } catch (e) {
       console.warn(e);
     } finally {
       reader = null;
+      if (!readLoopAbort && port) {
+        setConnectionStatus("USB disconnected — Connect again", "warn");
+        endDataSession();
+        try {
+          await port.close();
+        } catch (_) {}
+        port = null;
+        lockConnModeUi(false);
+        els.connect.disabled = false;
+        els.disconnect.disabled = true;
+      }
     }
   }
 
+  function scheduleWsReconnect() {
+    clearWsReconnectTimer();
+    if (intentionalDisconnect) return;
+    const delay = Math.min(
+      WS_BACKOFF_MAX_MS,
+      WS_BACKOFF_START_MS * Math.pow(2, wsReconnectAttempt)
+    );
+    wsReconnectAttempt += 1;
+    const sec = Math.max(1, Math.round(delay / 1000));
+    setConnectionStatus(`Reconnecting in ${sec}s…`, "warn");
+    wsReconnectTimer = setTimeout(() => {
+      wsReconnectTimer = null;
+      if (intentionalDisconnect) return;
+      openWebSocketConnection();
+    }, delay);
+  }
+
+  function openWebSocketConnection() {
+    if (intentionalDisconnect) return;
+    const myGen = ++wsGen;
+    const url = normalizeWsUrl(els.wsUrl && els.wsUrl.value);
+    setConnectionStatus("Connecting…", "warn");
+    let sock;
+    try {
+      sock = new WebSocket(url);
+      ws = sock;
+    } catch (e) {
+      console.warn(e);
+      scheduleWsReconnect();
+      return;
+    }
+
+    sock.onopen = () => {
+      if (intentionalDisconnect || myGen !== wsGen) {
+        try {
+          sock.close();
+        } catch (_) {}
+        return;
+      }
+      wsReconnectAttempt = 0;
+      clearWsReconnectTimer();
+      beginDataSession();
+      setConnectionStatus("Live (WebSocket)", "live");
+      els.connect.disabled = true;
+      els.disconnect.disabled = false;
+      lockConnModeUi(true);
+    };
+
+    sock.onmessage = (ev) => {
+      if (intentionalDisconnect || myGen !== wsGen) return;
+      const raw = typeof ev.data === "string" ? ev.data : "";
+      for (const piece of raw.split(/\r?\n/)) {
+        const trimmed = piece.trim();
+        if (trimmed) ingestTelemetryLine(trimmed);
+      }
+    };
+
+    sock.onerror = () => {
+      console.warn("WebSocket error");
+    };
+
+    sock.onclose = () => {
+      if (myGen !== wsGen) return;
+      ws = null;
+      endDataSession();
+      if (intentionalDisconnect) {
+        setConnectionStatus("Disconnected", "");
+        els.connect.disabled = false;
+        els.disconnect.disabled = true;
+        lockConnModeUi(false);
+        return;
+      }
+      els.disconnect.disabled = false;
+      scheduleWsReconnect();
+    };
+  }
+
+  function connectWebSocketClient() {
+    intentionalDisconnect = false;
+    wsReconnectAttempt = 0;
+    clearWsReconnectTimer();
+    els.disconnect.disabled = false;
+    if (ws) {
+      wsGen += 1;
+      try {
+        ws.close();
+      } catch (_) {}
+      ws = null;
+    }
+    openWebSocketConnection();
+  }
+
   async function connect() {
+    if (isWifiMode()) {
+      connectWebSocketClient();
+      return;
+    }
     if (!("serial" in navigator)) {
       alert(
         "Web Serial needs Chrome or Edge. Serve this page over http://localhost (not file://)."
       );
       return;
     }
+    intentionalDisconnect = false;
     try {
       port = await navigator.serial.requestPort();
       await port.open({ baudRate: BAUD });
       readLoopAbort = false;
       t0 = null;
-      els.status.textContent = "Connected";
-      els.status.classList.add("live");
+      beginDataSession();
+      setConnectionStatus("Live (USB)", "live");
       els.connect.disabled = true;
       els.disconnect.disabled = false;
+      lockConnModeUi(true);
       readLoop();
     } catch (e) {
       if (e.name !== "NotFoundError") console.warn(e);
@@ -466,7 +863,15 @@
   }
 
   async function disconnect() {
+    intentionalDisconnect = true;
+    clearWsReconnectTimer();
     readLoopAbort = true;
+    if (ws) {
+      try {
+        ws.close();
+      } catch (_) {}
+      ws = null;
+    }
     try {
       if (reader) await reader.cancel();
     } catch (_) {}
@@ -475,10 +880,11 @@
       if (port) await port.close();
     } catch (_) {}
     port = null;
-    els.status.textContent = "Disconnected";
-    els.status.classList.remove("live");
+    endDataSession();
+    setConnectionStatus("Disconnected", "");
     els.connect.disabled = false;
     els.disconnect.disabled = true;
+    lockConnModeUi(false);
   }
 
   function chartTickFmt(v) {
@@ -578,6 +984,9 @@
     if (Number.isFinite(cur) && m.id === "humidity") {
       sub += " · " + getHumidityStatus(cur).symbol;
     }
+    if (Number.isFinite(cur) && m.id === "pressure") {
+      sub += " · " + getPressureStatus(cur).symbol;
+    }
     els.modalCurrent.textContent = sub;
     els.modal.classList.add("open");
     els.modal.setAttribute("aria-hidden", "false");
@@ -642,10 +1051,17 @@
         sub += " · " + getPm25Status(last).symbol;
       if (Number.isFinite(last) && m.id === "humidity")
         sub += " · " + getHumidityStatus(last).symbol;
+      if (Number.isFinite(last) && m.id === "pressure")
+        sub += " · " + getPressureStatus(last).symbol;
       els.modalCurrent.textContent = sub;
       renderChart();
     });
   }
+
+  if (els.connUsb)
+    els.connUsb.addEventListener("change", () => syncConnModeUi());
+  if (els.connWifi)
+    els.connWifi.addEventListener("change", () => syncConnModeUi());
 
   els.connect.addEventListener("click", connect);
   els.disconnect.addEventListener("click", disconnect);
@@ -658,6 +1074,8 @@
     if (e.key === "Escape" && els.modal.classList.contains("open")) closeModal();
   });
 
+  syncConnModeUi();
+
   buildCards();
 
   if (els.humidityPanel) {
@@ -668,6 +1086,17 @@
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         openModal(CSV_HUMIDITY);
+      }
+    });
+  }
+
+  const pressurePanel = document.getElementById("pressure-panel");
+  if (pressurePanel) {
+    pressurePanel.addEventListener("click", () => openModal(CSV_PRESSURE));
+    pressurePanel.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openModal(CSV_PRESSURE);
       }
     });
   }

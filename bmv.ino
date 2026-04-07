@@ -60,11 +60,6 @@ static void updateGasHumidityRanges(float gasOhm, float humPct)
         hHistMax = humPct;
 }
 
-/**
- * Same logic as Medium article BME680Processor::calculateGasPercentage:
- * r = (hMax-hMin)/(gMax-gMin); g = (-gas + gMax)*r + hMin; clamp g >= humidity;
- * return ((g - humidity) / g) * 100
- */
 static float gasHumidityAdjustedPercent(float gasOhm, float humPct)
 {
     if (!std::isfinite(gasOhm) || !std::isfinite(humPct))
@@ -94,7 +89,6 @@ static float gasHumidityAdjustedPercent(float gasOhm, float humPct)
     return pct;
 }
 
-/** One CSV row: PM1, PM2.5, PM10, Temp (°C), Humidity (%), Gas adj (%), Pressure (hPa) */
 static void printSensorCsv(Stream &out, float pm1, float pm25, float pm10,
                            float temperature, float humidity, float gas, float pressure_hpa)
 {
@@ -119,14 +113,11 @@ void setup()
     delay(1000);
     Serial.println("Booting...");
 
-    // Bluetooth
     SerialBT.begin("ESP32test");
     Serial.println("Bluetooth started: ESP32test");
 
-    // I2C
     i2cBus.begin();
 
-    // ---- BMV080 ----
     if (!bmv080.begin(BMV080_ADDR, i2cBus))
     {
         Serial.println("BMV080 not found");
@@ -140,7 +131,6 @@ void setup()
         Serial.println("BMV080 OK");
     }
 
-    // ---- BME680 ----
     if (!bme.begin(BME680_ADDR, &i2cBus))
     {
         Serial.println("BME680 not found");
@@ -165,7 +155,6 @@ void setup()
 
 void loop()
 {
-    // ---- BME680 reading ----
     float temperature = NAN;
     float humidity = NAN;
     float pressure = NAN;
@@ -178,7 +167,7 @@ void loop()
         {
             temperature = bme.temperature;
             humidity = bme.humidity;
-            pressure = bme.pressure / 100.0; // hPa
+            pressure = bme.pressure / 100.0;
             gasRaw = bme.gas_resistance;
             if (std::isfinite(gasRaw) && std::isfinite(humidity))
             {
@@ -188,7 +177,6 @@ void loop()
         }
     }
 
-    // ---- BMV080 reading ----
     float pm1 = NAN;
     float pm25 = NAN;
     float pm10 = NAN;
@@ -200,11 +188,9 @@ void loop()
         pm10 = bmv080.PM10();
     }
 
-    // ---- USB + Bluetooth: same CSV line ----
     printSensorCsv(Serial, pm1, pm25, pm10, temperature, humidity, gasAdjPct, pressure);
     printSensorCsv(SerialBT, pm1, pm25, pm10, temperature, humidity, gasAdjPct, pressure);
 
-    // ---- Read incoming BT data  ----
     while (SerialBT.available())
     {
         Serial.write(SerialBT.read());

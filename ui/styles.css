@@ -71,6 +71,55 @@ body > header code {
   gap: 0.65rem;
 }
 
+.toolbar--conn {
+  max-width: min(100%, 52rem);
+  justify-content: flex-end;
+}
+
+.conn-mode {
+  margin: 0;
+  padding: 0;
+  border: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+.conn-mode-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.conn-mode-label input {
+  accent-color: var(--accent);
+}
+
+.ws-url-input {
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.82rem;
+  min-width: 12rem;
+  flex: 1 1 10rem;
+  max-width: 20rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.ws-url-input:disabled {
+  opacity: 0.55;
+}
+
+body:not(.conn-wifi-selected) .ws-url-input {
+  display: none;
+}
+
 button {
   font-family: inherit;
   font-size: 0.9rem;
@@ -116,6 +165,10 @@ button:disabled {
   color: var(--good);
 }
 
+.status.warn {
+  color: var(--warn);
+}
+
 main {
   padding: 1.25rem 1.75rem 2.5rem;
   max-width: 1200px;
@@ -149,7 +202,8 @@ main {
   }
 }
 
-.humidity-panel {
+.humidity-panel,
+.pressure-panel {
   width: 100%;
   max-width: none;
   cursor: pointer;
@@ -158,7 +212,8 @@ main {
   min-height: 340px;
 }
 
-.humidity-panel-title {
+.humidity-panel-title,
+.pressure-panel-title {
   margin: 0 0 0.75rem;
   font-size: 0.8rem;
   font-weight: 700;
@@ -168,7 +223,8 @@ main {
   text-align: center;
 }
 
-.humidity-panel-body--water {
+.humidity-panel-body--water,
+.pressure-panel-body--water {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -177,7 +233,8 @@ main {
   padding: 0.35rem 0.5rem 0.5rem;
 }
 
-.humid-water-widget {
+.humid-water-widget,
+.press-water-widget {
   position: relative;
   width: 200px;
   height: 200px;
@@ -185,29 +242,34 @@ main {
   flex-shrink: 0;
 }
 
-.humid-water-svg {
+.humid-water-svg,
+.press-water-svg {
   display: block;
   width: 200px;
   height: 200px;
 }
 
-.humid-water-svg #humid-liquid-fill {
+.humid-water-svg #humid-liquid-fill,
+.press-water-svg #press-liquid-fill {
   transition:
     y 0.55s cubic-bezier(0.22, 1, 0.36, 1),
     height 0.55s cubic-bezier(0.22, 1, 0.36, 1),
     fill 0.35s ease;
 }
 
-.humid-wave-layer {
+.humid-wave-layer,
+.press-wave-layer {
   pointer-events: none;
   transition: opacity 0.25s ease;
 }
 
-.humid-wave-scroll {
+.humid-wave-scroll,
+.press-wave-scroll {
   animation: humidWaveScroll 5.5s linear infinite;
 }
 
-.humid-wave-scroll--b {
+.humid-wave-scroll--b,
+.press-wave-scroll--b {
   animation-duration: 7.5s;
   animation-direction: reverse;
 }
@@ -221,7 +283,8 @@ main {
   }
 }
 
-.humid-water-overlay {
+.humid-water-overlay,
+.press-water-overlay {
   position: absolute;
   inset: 0;
   display: flex;
@@ -231,7 +294,8 @@ main {
   z-index: 2;
 }
 
-.humid-water-num {
+.humid-water-num,
+.press-water-num {
   font-size: 2rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -240,12 +304,15 @@ main {
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.65);
 }
 
-.humid-water-pct {
-  font-size: 1.2rem;
+.humid-water-pct,
+.press-water-unit {
+  font-size: 1.05rem;
   font-weight: 600;
   color: rgba(248, 250, 252, 0.92);
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.65);
-  margin-left: 0.08rem;
+  margin-left: 0.12rem;
+  align-self: center;
+  padding-top: 0.35rem;
 }
 
 .card {
