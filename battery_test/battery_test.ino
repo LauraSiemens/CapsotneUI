@@ -110,8 +110,39 @@ static int voltageToPercent(float voltage)
     return constrain(batteryPercent, 0, 100);
 }
 
+static unsigned long lastSampleMs = 0;
+static unsigned long lastBmvPumpMs = 0;
+static float pm1Cache = NAN;
+static float pm25Cache = NAN;
+static float pm10Cache = NAN;
+
 void loop()
 {
+    unsigned long now = millis();
+
+    if (bmv080Ok && (now - lastBmvPumpMs >= 100))
+    {
+        lastBmvPumpMs = now;
+        if (bmv080.readSensor())
+        {
+            pm1Cache = bmv080.PM1();
+            pm25Cache = bmv080.PM25();
+            pm10Cache = bmv080.PM10();
+        }
+    }
+
+    while (SerialBT.available())
+    {
+        Serial.write(SerialBT.read());
+    }
+
+    if (now - lastSampleMs < 1000)
+    {
+        delay(10);
+        return;
+    }
+    lastSampleMs = now;
+
     float temperature = NAN;
     float humidity = NAN;
     float pressure = NAN;
@@ -132,16 +163,9 @@ void loop()
         }
     }
 
-    float pm1 = NAN;
-    float pm25 = NAN;
-    float pm10 = NAN;
-
-    if (bmv080Ok && bmv080.readSensor())
-    {
-        pm1 = bmv080.PM1();
-        pm25 = bmv080.PM25();
-        pm10 = bmv080.PM10();
-    }
+    float pm1 = pm1Cache;
+    float pm25 = pm25Cache;
+    float pm10 = pm10Cache;
 
     unsigned long timestamp = millis();
 
@@ -157,11 +181,4 @@ void loop()
 
     Serial.println(dataLine);
     SerialBT.println(dataLine);
-
-    while (SerialBT.available())
-    {
-        Serial.write(SerialBT.read());
-    }
-
-    delay(1000);
 }

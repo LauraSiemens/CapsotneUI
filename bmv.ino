@@ -249,6 +249,12 @@ void setup()
 }
 
 static unsigned long lastSampleMs = 0;
+/** BMV080: Bosch driver must call readSensor() often (~10 Hz); SparkFun Example_01 uses delay(100) in loop. */
+static unsigned long lastBmvPumpMs = 0;
+static float pm1Cache = NAN;
+static float pm25Cache = NAN;
+static float pm10Cache = NAN;
+static constexpr unsigned long BMV080_PUMP_INTERVAL_MS = 100;
 
 void loop()
 {
@@ -256,6 +262,18 @@ void loop()
         webSocket.loop();
 
     unsigned long now = millis();
+
+    if (bmv080Ok && (now - lastBmvPumpMs >= BMV080_PUMP_INTERVAL_MS))
+    {
+        lastBmvPumpMs = now;
+        if (bmv080.readSensor())
+        {
+            pm1Cache = bmv080.PM1();
+            pm25Cache = bmv080.PM25();
+            pm10Cache = bmv080.PM10();
+        }
+    }
+
     if (now - lastSampleMs < 1000)
         return;
     lastSampleMs = now;
@@ -282,16 +300,9 @@ void loop()
         }
     }
 
-    float pm1 = NAN;
-    float pm25 = NAN;
-    float pm10 = NAN;
-
-    if (bmv080Ok && bmv080.readSensor())
-    {
-        pm1 = bmv080.PM1();
-        pm25 = bmv080.PM25();
-        pm10 = bmv080.PM10();
-    }
+    float pm1 = pm1Cache;
+    float pm25 = pm25Cache;
+    float pm10 = pm10Cache;
 
     int rawBat = analogRead(VBAT_PIN);
     float vbat = (rawBat / ADC_MAX) * ADC_REF * VOLTAGE_DIVIDER;

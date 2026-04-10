@@ -1,5 +1,5 @@
 # Air monitor: static UI (8765) + optional serial→WebSocket bridge (8766).
-# See DOCKER.md for SERIAL_PORT and USB device mapping.
+# See README.md for SERIAL_PORT and USB device mapping notes.
 
 FROM python:3.12-slim-bookworm
 

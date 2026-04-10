@@ -30,6 +30,8 @@ SparkFunBMV080 bmv080;     // BMV080 over I2C
 
 BluetoothSerial SerialBT;
 
+static bool bmv080Ok = false;
+
 void setup() {
  Serial.begin(115200);
  delay(1000);
@@ -49,6 +51,7 @@ void setup() {
  } else {
    bmv080.init();
    bmv080.setMode(SF_BMV080_MODE_CONTINUOUS);
+   bmv080Ok = true;
    Serial.println("BMV080 OK");
  }
 
@@ -70,8 +73,34 @@ void setup() {
  SerialBT.println("PM1, PM2.5, PM10, Temp, Humidity, Gas, Pressure");
 }
 
+static unsigned long lastSampleMs = 0;
+static unsigned long lastBmvPumpMs = 0;
+static float pm1Cache = NAN;
+static float pm25Cache = NAN;
+static float pm10Cache = NAN;
+
 void loop() {
-  // ---- BME680 reading ----
+  unsigned long now = millis();
+
+  if (bmv080Ok && (now - lastBmvPumpMs >= 100)) {
+    lastBmvPumpMs = now;
+    if (bmv080.readSensor()) {
+      pm1Cache = bmv080.PM1();
+      pm25Cache = bmv080.PM25();
+      pm10Cache = bmv080.PM10();
+    }
+  }
+
+  while (SerialBT.available()) {
+    Serial.write(SerialBT.read());
+  }
+
+  if (now - lastSampleMs < 1000) {
+    delay(10);
+    return;
+  }
+  lastSampleMs = now;
+
   float temperature = NAN;
   float humidity = NAN;
   float pressure = NAN;
@@ -81,29 +110,17 @@ void loop() {
     if (bme.endReading()) {
       temperature = bme.temperature;
       humidity = bme.humidity;
-      pressure = bme.pressure / 100.0; // hPa
+      pressure = bme.pressure / 100.0;
       gas = bme.gas_resistance;
     }
   }
 
-  // ---- BMV080 reading ----
-  float pm1 = NAN;
-  float pm25 = NAN;
-  float pm10 = NAN;
+  float pm1 = pm1Cache;
+  float pm25 = pm25Cache;
+  float pm10 = pm10Cache;
 
-  if (bmv080.readSensor()) {
-    pm1  = bmv080.PM1();
-    pm25 = bmv080.PM25();
-    pm10 = bmv080.PM10();
-    Serial.println("BMV080 read successful");
-  } else {
-    Serial.println("BMV080 read failed");
-  }
-
-  // ---- Timestamp (ms since boot) ----
   unsigned long timestamp = millis();
 
-  // ---- Create CSV line ----
   String dataLine = String(timestamp) + "," +
                     String(pm1) + "," +
                     String(pm25) + "," +
@@ -113,16 +130,6 @@ void loop() {
                     String(gas) + "," +
                     String(pressure);
 
-  // ---- Print to Serial Monitor ----
   Serial.println(dataLine);
-
-  // ---- Print to Bluetooth ----
   SerialBT.println(dataLine);
-
-  // ---- Read incoming BT data ----
-  while (SerialBT.available()) {
-    Serial.write(SerialBT.read());
-  }
-
-  delay(1000);
 }
